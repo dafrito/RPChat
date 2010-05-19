@@ -1,0 +1,231 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:WindowedApplication xmlns:mx="http://www.adobe.com/2006/mxml" xmlns:bs="bluespot.controls.*" initialize="initializeHandler(event)" creationComplete="creationCompleteListener(event)">
+	<mx:Metadata>
+		[ResourceBundle("ServerSelector")]
+		[ResourceBundle("EventMessages")]
+	</mx:Metadata>
+	<mx:title>RPChat</mx:title>
+	<mx:verticalAlign>middle</mx:verticalAlign>
+	<mx:backgroundGradientAlphas>[1.0, 1.0]</mx:backgroundGradientAlphas>
+	<mx:backgroundGradientColors>[#276686, #869CA7]</mx:backgroundGradientColors>
+	<mx:layout>vertical</mx:layout>
+	<mx:width>972</mx:width>
+	<mx:height>710</mx:height>
+	<mx:Style source="assets/style.css"/>
+	<mx:Script>
+		<![CDATA[
+		
+			import flash.net.registerClassAlias;
+		
+			import mx.core.Container;
+			import mx.events.IndexChangedEvent;
+			import mx.events.ChildExistenceChangedEvent;
+			
+			import flexlib.containers.SuperTabNavigator;
+			import flexlib.events.SuperTabEvent;
+			
+			import bluespot.collections.IRecord;
+			import bluespot.events.ChannelEvent;
+			import bluespot.events.ChatEvent;
+			import bluespot.events.UserEvent;
+			import bluespot.events.ServerSelectorEvent;
+			import bluespot.net.Communicator;
+			import bluespot.net.Server;
+			import bluespot.controls.Chatroom;
+			import bluespot.controls.ServerSelector;
+			import bluespot.controls.ChatroomViewer;
+			import bluespot.managers.ApplicationManager;
+			
+			private static const STATE_ACTIVE:String = "Active";
+			
+			private var server:Server;
+			
+			private function initializeHandler(e:Event):void {
+				ApplicationManager.getInstance().loadPreferences();
+				this.nativeWindow.addEventListener(Event.CLOSING, this.closingListener);
+			}
+			
+			private function creationCompleteListener(e:Event):void {
+				this.callLater(this.positionWindow);
+				this.serverSelector.addEventListener(ServerSelectorEvent.CONNECT, this.serverSelectorListener);
+				this.serverSelector.addEventListener(ServerSelectorEvent.DISCONNECT, this.serverSelectorListener);
+				this.serverSelector.addEventListener(ServerSelectorEvent.JOIN_CHANNELS, this.serverSelectorListener);			
+			}
+			
+			private function serverSelectorListener(e:ServerSelectorEvent):void {
+				switch(e.type) {
+					case ServerSelectorEvent.CONNECT:
+						this.server = e.server;
+						this.server.addEventListener(Server.CONNECTION_CHANGE, this.connectionChangeListener);
+						break;
+					case ServerSelectorEvent.DISCONNECT:
+						// A disconnect was requested from the ServerSelector.
+						break;
+					case ServerSelectorEvent.JOIN_CHANNELS:
+						break;	
+				}
+			}
+			
+			private function closingListener(e:Event):void {
+				ApplicationManager.getInstance().savePreferences();
+				if(this.server && this.server.connected)
+					this.server.disconnect();
+			}
+
+			private function positionWindow():void {
+				var screen:Rectangle = Screen.mainScreen.bounds;
+				var window:Rectangle = this.bounds.clone();
+				// Center our window.
+				if(screen.width < window.width) {
+					// Our window's width is bigger than the screen, so position at the left.
+					window.x = screen.left;
+				} else {
+					// Center horizontally:
+					// Specifically, we take the left side of our mainScreen, then add half
+					// the width so that our left-side is aligned with the center, then subtract
+					// half the width of the window to get the proper horizontal center.
+					window.x = screen.left + (screen.width / 2) - (window.width / 2);
+				}
+				if(screen.height < window.height) {
+					// Our window's height is bigger than the screen's, so position at the top.
+					window.y = screen.top;
+				} else {
+					// Center vertically:
+					// Specifically, we take the top side of our mainScreen, then add half
+					// the height so that our top edge of the window is aligned with the vertical
+					// center line of the screen. We then subtract half the height of our window
+					// to get the proper vertical alignment.
+					window.y = screen.top + (screen.height / 2) - (window.height / 2); 
+				}
+				this.nativeWindow.x = window.x;
+				this.nativeWindow.y = window.y;
+				
+				// Maximize our window.
+				this.nativeWindow.maximize();
+			}	
+			
+			private function chatroomViewerInitializer():void {
+				var tabs:SuperTabNavigator = this.chatroomViewer;
+				tabs.addEventListener(ChildExistenceChangedEvent.CHILD_ADD, this.chatroomViewerListener);
+				tabs.addEventListener(ChildExistenceChangedEvent.CHILD_REMOVE, this.chatroomViewerListener);
+				tabs.addEventListener(SuperTabEvent.TAB_CLOSE, this.tabCloseListener);
+				tabs.addEventListener(IndexChangedEvent.CHANGE, this.indexChangedListener);
+				this.chatroomViewer.addEventListener(Chatroom.REQUEST_RECONNECT, this.chatroomViewerListener);
+			}
+			
+			private function indexChangedListener(e:IndexChangedEvent):void {
+				var chatroom:Chatroom = e.relatedObject as Chatroom;
+				if(chatroom)
+					chatroom.input.setFocus();
+			}
+			
+			private function tabCloseListener(e:SuperTabEvent):void {
+				e.preventDefault();
+				var tabs:Container = e.currentTarget as Container;
+				var chatroom:Chatroom = tabs.getChildAt(e.tabIndex) as Chatroom;
+				if(chatroom.communicator && chatroom.communicator.type === Communicator.CHANNEL) {
+					chatroom.communicator.server.leaveChannel(chatroom.communicator.name);
+				} else {
+					this.chatroomViewer.removeRoom(chatroom.communicator);
+				}
+			}
+			
+			private function chatroomViewerListener(e:Event):void {
+				switch(e.type) {
+					case ChildExistenceChangedEvent.CHILD_ADD:
+						this.currentState = RPChat.STATE_ACTIVE;
+						break;
+					case ChildExistenceChangedEvent.CHILD_REMOVE:
+						if(this.chatroomViewer.numChildren === 1)
+							this.currentState = null;
+						break;
+					case Chatroom.REQUEST_RECONNECT:
+						if(this.server && this.server.state === Server.DISCONNECTED) {
+							this.server.connect();
+						}
+				}
+			}
+			
+			private var _connected:Boolean = false;
+			private function connectionChangeListener(e:Event):void {
+				var server:Server = e.currentTarget as Server;
+				switch(server.state) {
+					case Server.AUTHENTICATING:
+						if(!this._connected) {
+							ChannelEvent.addAllEventListeners(server, this.serverEventListener);
+							ChatEvent.addAllEventListeners(server, this.serverEventListener);
+							UserEvent.addAllEventListeners(server, this.serverEventListener);
+							this._connected = true;
+						}
+						break;
+					case Server.CONNECTED:
+						this.currentState = RPChat.STATE_ACTIVE;
+						ApplicationManager.getInstance().savePreferences();
+						break;
+					case Server.DISCONNECTED:
+						if(this._connected) {
+							ChannelEvent.removeAllEventListeners(server, this.serverEventListener);
+							ChatEvent.removeAllEventListeners(server, this.serverEventListener);
+							UserEvent.removeAllEventListeners(server, this.serverEventListener);
+							this.chatroomViewer.disconnectRooms();
+							this._connected = false;
+						}	
+				}
+			}
+			
+			private function serverEventListener(e:Event):void {
+				var domain:Communicator;
+				if(e is ChatEvent) {
+					// It's a ChatEvent, so just let our rooms handle it.
+					var chatEvent:ChatEvent = e as ChatEvent;
+					domain = chatEvent.domain;	
+				} else if(e is UserEvent) {
+					var userEvent:UserEvent = e as UserEvent;
+					switch(userEvent.type) {
+						case UserEvent.QUIT:
+							if(userEvent.user.isClient()) {
+								// It's the client that's quitting, so close all rooms.
+								this.chatroomViewer.removeAllRooms();
+								return;	
+							}
+							// It's someone else, so remove their room if there's an open whisper.
+							this.chatroomViewer.removeRoom(userEvent.user);
+					}
+					/* At the moment, we return since we have no real solution for handling these events. */
+					return;
+				} else if(e is ChannelEvent) {
+					var channelEvent:ChannelEvent = e as ChannelEvent;
+					switch(channelEvent.type) {
+						case ChannelEvent.PART:
+						case ChannelEvent.KICK:
+							if(channelEvent.user.isClient()) {
+								// We just got kicked or left a room, so remove that room.
+								this.chatroomViewer.removeRoom(channelEvent.channel);
+								return;
+							}
+					}
+					// Otherwise, fall through normally.
+					domain = (e as ChannelEvent).channel;
+				} else {
+					throw new Error("Unknown event passed to serverEventListener!");	
+				}
+				if(!domain)
+					throw new Error("Must specify domain when defaulting in serverEventListener");
+				this.chatroomViewer.procureRoom(domain).handle(e);
+			}
+			
+		]]>
+	</mx:Script>
+	<bs:ServerSelector id="serverSelector"/>	
+	<mx:states>
+		<mx:State name="{RPChat.STATE_ACTIVE}">
+			<mx:RemoveChild target="{serverSelector}"/>
+			<!-- The creation policy here is necessary because we use chatroomViewer's chatrooms to switch states.
+				If it's default, AddChild doesn't create it, we don't add our listener, and when the server connects,
+				we get a RTE from it not being available. -->
+			<mx:AddChild creationPolicy="all">
+				<bs:ChatroomViewer id="chatroomViewer" initialize="chatroomViewerInitializer();"/>
+			</mx:AddChild>
+		</mx:State>
+	</mx:states>
+</mx:WindowedApplication>

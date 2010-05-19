@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Preferences>
+	<Servers>
+		<Server name="irc.sorcery.net">
+			<Port>6667</Port>
+			<Nickname>Dafrito</Nickname>
+			<Channel name="#RPChat"/>
+		</Server>
+	</Servers>
+</Preferences>

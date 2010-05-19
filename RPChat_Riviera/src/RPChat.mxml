@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:WindowedApplication
+	xmlns:mx="http://www.adobe.com/2006/mxml"
+	xmlns:bs="bluespot.controls.*"
+	xmlns:sessions="bluespot.controls.sessionClasses.*"
+	
+	layout = "vertical"
+	verticalAlign = "middle"
+	width = "972"
+	height = "710"
+	
+	title="RPChat"
+	backgroundGradientAlphas = "[1.0, 1.0]"
+	backgroundGradientColors = "[#276686, #869CA7]"
+	
+	initialize="initializeHandler(event)"
+	creationComplete="creationCompleteListener(event)">
+	
+	<mx:Metadata>
+		[ResourceBundle("ServerSelector")]
+		[ResourceBundle("ServerEvent")]
+	</mx:Metadata>
+	
+	<mx:Script>
+		<![CDATA[
+			import bluespot.sessions.ISession;
+			import bluespot.controls.sessionClasses.SessionViewFactory;
+			import bluespot.managers.SessionManager;
+			import bluespot.managers.ApplicationManager;
+			import bluespot.managers.ServerManager;
+			import bluespot.utils;
+			
+			private static const STATE_ACTIVE:String = "Active";
+			
+			private function initializeHandler(e:Event):void {
+				ApplicationManager.getInstance().loadPreferences();
+				this.nativeWindow.addEventListener(Event.CLOSING, this.closingListener);
+				this.sessionManager = new SessionManager();
+				this.sessionManager.addEventListener(SessionManager.SESSIONS_UPDATE, this.sessionManagerListener);
+			}
+			
+			private function sessionManagerListener(e:Event):void {
+				this.currentState = this.sessionManager.hasSessions ? RPChat.STATE_ACTIVE : null;
+			}
+			
+			private function closingListener(e:Event):void {
+				ServerManager.getInstance().removeAll();
+				ApplicationManager.getInstance().savePreferences();
+			}
+			
+			private function creationCompleteListener(e:Event):void {
+				// We have to callLater this, otherwise the size of our window isn't right.
+				this.callLater(this.positionWindow);
+			}
+			
+			private function positionWindow():void {
+				bluespot.utils.positionWindow(this, this.bounds, false);
+			}
+			
+			[Bindable]
+			private var sessionManager:SessionManager;
+			
+			private function createSessionView(data:Object):DisplayObject {
+				return DisplayObject(SessionViewFactory.getInstance().createSessionView(ISession(data)));
+			}
+		]]>
+	</mx:Script>
+	<mx:Style>
+		.sessionViewer {
+			backgroundColor: #c5d7e1;
+			backgroundAlpha: 1.0;
+			padding-left: 5;
+			padding-right: 5;
+			padding-top: 5;
+			padding-bottom: 5;
+		} 
+	</mx:Style>
+	<mx:states>
+		<mx:State name="Active">
+			<mx:SetProperty target="{this.viewStack}" name="selectedIndex" value="{1}"/>
+			<mx:SetProperty target="{this.viewStack}" name="percentWidth" value="{100}"/>
+			<mx:SetProperty target="{this.viewStack}" name="percentHeight" value="{100}"/>
+		</mx:State>
+	</mx:states>
+	<mx:ViewStack id="viewStack">
+		<bs:ServerSelector/>
+		<mx:TabNavigator id="sessionViewer" styleName="sessionViewer"/>
+	</mx:ViewStack>
+	<bs:ViewStackDataBridge
+		container="{this.sessionViewer}"
+		dataProvider="{this.sessionManager.sessions}"
+		createChildFunction="{this.createSessionView}"
+	/>
+</mx:WindowedApplication>

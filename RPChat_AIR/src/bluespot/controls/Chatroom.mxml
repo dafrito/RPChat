@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:VBox xmlns:mx="http://www.adobe.com/2006/mxml" xmlns:bs="bluespot.controls.*" creationComplete="creationCompleteListener();">
+	<mx:width>100%</mx:width>
+	<mx:height>100%</mx:height>
+	<mx:verticalGap>2</mx:verticalGap>
+	<mx:Script>
+		<![CDATA[
+			import mx.core.UIComponent;
+			import mx.binding.utils.BindingUtils;
+			import mx.binding.utils.ChangeWatcher;
+			import mx.collections.ArrayCollection;
+			import mx.collections.IList;
+			import mx.collections.XMLListCollection;
+			import mx.events.MenuEvent;
+			import mx.events.CollectionEvent;
+			import mx.events.CollectionEventKind;
+			import mx.controls.Menu;
+			import mx.formatters.Formatter;
+			import mx.controls.Label;
+			
+			import bluespot.net.Communicator;
+			import bluespot.events.UserEvent;
+			import bluespot.events.ChannelEvent;
+			import bluespot.events.ChatEvent;
+			import bluespot.managers.ServerAccountManager;
+			import bluespot.controls.EventFormatter;
+			
+			public static const STATE_ACTIVE:String = "Active";
+			
+			public static const REQUEST_CLOSE:String = "RequestCloseEvent";
+			public static const REQUEST_RECONNECT:String = "RequestReconnectEvent";
+			public static const REQUEST_PREVIOUS:String = "RequestPreviousEvent";
+			public static const REQUEST_NEXT:String = "RequestNextEvent";
+			
+			private var serverMenu:Menu;
+			
+			private static var disconnectedMenu:Array = [
+				{label:"Leave Room"},
+				{label:"Reconnect"}
+			];
+			
+			private static var connectedMenu:Array = [
+				{label:"Leave Room"},
+				{label:"Disconnect"}
+			];
+			
+			
+			public var chatValues:IList = new ArrayCollection();
+			
+			[Bindable]
+			public var formattedChat:String = null;
+			
+			private function creationCompleteListener():void {
+				this.serverMenu = new Menu();
+				this.serverMenu.dataProvider = this.currentState === Chatroom.STATE_ACTIVE ?
+					Chatroom.connectedMenu :
+					Chatroom.disconnectedMenu;
+				this.serverPopup.popUp = this.serverMenu;
+				this.serverMenu.width = this.serverPopup.width * .90;
+				this.serverPopup.label = this.communicator.server.serverName;
+				this.serverMenu.addEventListener(MenuEvent.ITEM_CLICK, this.serverMenuListener);
+				this.input.addEventListener(KeyboardEvent.KEY_DOWN, this.keyListener);
+				BindingUtils.bindProperty(this.chatTextArea, "htmlText", this, "formattedChat");
+			}
+			
+			private function keyListener(e:KeyboardEvent):void {
+				switch(e.keyCode) {
+					case Keyboard.ENTER:
+						if(e.shiftKey)
+							break;
+						e.preventDefault();
+						if(this.communicator && this.communicator.server.connected) {
+							if(this.input.text.match(/\S/)) {
+								this.communicator.server.speak(
+									this.input.text,
+									this.communicator
+								);
+							}
+							this.input.text = "";
+						}
+						break;
+					case Keyboard.TAB:
+						if(!e.ctrlKey)
+							return;
+						e.preventDefault();
+						this.dispatchEvent(new Event(
+							e.shiftKey ?
+								Chatroom.REQUEST_PREVIOUS :
+								Chatroom.REQUEST_NEXT
+						));
+						break;
+				}
+				
+			}
+			
+			private function serverMenuListener(e:MenuEvent):void { 
+				this.serverPopup.close();
+				switch(e.label) {
+					case "Leave Room":
+						if(this.currentState === Chatroom.STATE_ACTIVE)
+							this.callLater(this.communicator.server.leaveChannel, [this.communicator.name]);
+						else
+							this.callLater(this.dispatchEvent, [new Event(Chatroom.REQUEST_CLOSE)]);
+						break;
+					case "Disconnect":
+						this.communicator.server.disconnect();
+						break;
+					case "Reconnect":
+						this.callLater(this.dispatchEvent, [new Event(Chatroom.REQUEST_RECONNECT)]);
+				}
+			}
+			
+			private var _label:String;
+			[Bindable]
+			override public function set label(label:String):void {
+				this._label = Communicator.getFormattedName(label);
+			}
+			
+			override public function get label():String {
+				return this._label;
+			}
+
+			private var _communicator:Communicator;
+			public function get communicator():Communicator {
+				return this._communicator;
+			}
+			
+			private var changeWatcher:ChangeWatcher;
+			public function set communicator(communicator:Communicator):void {
+				this._communicator = communicator;
+				if(this.communicator) {
+					if(this.changeWatcher)
+						this.changeWatcher.reset(this.communicator);
+					else
+						this.changeWatcher = BindingUtils.bindProperty(this, "label", this.communicator, "name");
+					this.currentState = Chatroom.STATE_ACTIVE;
+					if(this.serverMenu)
+						this.serverMenu.dataProvider = Chatroom.connectedMenu;
+					this.label = this.communicator.name;
+				} else {
+					this.changeWatcher.unwatch();
+					if(this.serverMenu)
+						this.serverMenu.dataProvider = Chatroom.disconnectedMenu;
+					this.currentState = null;	
+				}
+			}
+			
+			private var _formatter:Formatter;
+			public function get formatter():Formatter {
+				return this._formatter;
+			}
+			
+			public function set formatter(formatter:Formatter):void {
+				if(this._formatter === formatter)
+					return;
+				this._formatter = formatter;
+				if(!this._formatter)
+					return;
+				var chatText:Array = [];
+				for each(var value:* in this.chatValues)
+					chatText.push(this.formatter.format(value));
+				this.formattedChat = chatText.join("");
+			}
+			
+			public function handle(value:*):void {
+				if(this.chatTextArea && this.formatter)
+					this.formattedChat += this.formatter.format(value);
+				this.chatValues.addItem(value);
+			}
+			
+			public function getDefaultMessageStyle():CSSStyleDeclaration {
+				return this.styleDeclaration;
+			}
+			
+		]]>
+	</mx:Script>
+	<mx:states>
+		<mx:State name="{Chatroom.STATE_ACTIVE}">
+			<mx:SetProperty target="{this.input}" name="enabled" value="{true}"/>
+		</mx:State>
+	</mx:states>
+	<mx:HBox width="100%">
+		<mx:Label text="Topic" textAlign="left" width="100%" fontSize="12"/>
+		<mx:PopUpButton id="serverPopup" width="221" label="Server" openAlways="true" closeDuration="0"/>
+	</mx:HBox>
+	<mx:HDividedBox height="100%" width="100%" verticalGap="2" horizontalGap="6">
+		<mx:VDividedBox height="100%" width="100%" verticalGap="6">
+			<bs:BottomFeedingTextArea id="chatTextArea" styleName="chatTextArea" width="100%" height="100%" editable="false" verticalScrollPolicy="on"/>
+			<bs:ChatEntryField id="input" width="100%" height="65" styleName="chatEntryField" enabled="false"/>
+		</mx:VDividedBox>
+	</mx:HDividedBox>
+</mx:VBox>

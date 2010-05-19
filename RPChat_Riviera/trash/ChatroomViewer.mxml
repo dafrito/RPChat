@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="utf-8"?>
+<bs:TabNavigator xmlns:mx="http://www.adobe.com/2006/mxml" xmlns:bs="bluespot.controls.*">
+	<bs:width>100%</bs:width>
+	<bs:height>100%</bs:height>
+	<bs:backgroundAlpha>1.0</bs:backgroundAlpha>
+	<bs:backgroundColor>#c5d7e1</bs:backgroundColor>
+	<bs:horizontalGap>2</bs:horizontalGap>
+	<bs:tabStyleName>tabButton</bs:tabStyleName>
+	<mx:Style>
+		.tabButton {
+			fillColors: #97d0da, white;
+			fillAlphas: 1.0, 1.0;
+		}
+	</mx:Style>
+	<mx:Script>
+		<![CDATA[
+			import mx.collections.Sort;
+			import mx.collections.SortField;
+			import mx.collections.IViewCursor;
+			import mx.collections.ArrayCollection;
+			import mx.collections.ICollectionView;
+			import mx.events.CollectionEvent;
+			import mx.events.CollectionEventKind;
+			
+			import flexlib.events.SuperTabEvent;
+			import flexlib.controls.tabBarClasses.SuperTab;
+			
+			import bluespot.net.Communicator;
+			import bluespot.collections.RecordKeeper;
+			import bluespot.controls.EventFormatter;
+			
+			private var _chatrooms:ICollectionView;
+			public function get chatrooms():ICollectionView {
+				if(!this._chatrooms) {
+					this._chatrooms = new ArrayCollection();
+					this._chatrooms.sort = new Sort();
+					this._chatrooms.sort.fields = [new SortField("label")];
+					this._chatrooms.refresh();
+					this._chatrooms.addEventListener(CollectionEvent.COLLECTION_CHANGE, this.collectionChangeListener);
+				}
+				return this._chatrooms;
+			}
+			
+			private var _cursor:IViewCursor;
+			public function get cursor():IViewCursor {
+				if(!this._cursor)
+					this._cursor = this.chatrooms.createCursor();
+				return this._cursor;
+			}
+			
+			private function collectionChangeListener(e:CollectionEvent):void {
+				var chatroom:Chatroom;
+				switch(e.kind) {
+					case CollectionEventKind.ADD:
+						var flag:Boolean = false;
+						if(!this.numChildren)
+							flag = true;
+						for each(chatroom in e.items)
+							this.addChild(chatroom);
+						this.selectedChild = chatroom;
+						break;
+					case CollectionEventKind.REMOVE:
+						for each(chatroom in e.items) {
+							this.removeChild(chatroom);
+						}
+						break;
+				}
+			}
+			
+			//*** Public interface for our rooms.
+			
+			public function procureRoom(communicator:Communicator):Chatroom {
+				var chatroom:Chatroom = this.peekRoom(communicator);
+				if(!chatroom)
+					chatroom = this.createRoom(communicator);
+				chatroom.communicator = communicator;
+				return chatroom;	
+			}
+			
+			public function peekRoom(communicator:Communicator):Chatroom {
+				if(this.cursor.findAny({label:communicator.formattedName}))
+					return this.cursor.current as Chatroom;
+				return null;
+			}
+			
+			public function removeRoom(communicator:Communicator):void {
+				if(this.cursor.findAny({label:communicator.formattedName})) {
+					this.cursor.remove();
+				}
+			}
+			
+			public function removeAllRooms():void {
+				var cursor:IViewCursor = this.chatrooms.createCursor();
+				while(cursor.current)
+					cursor.remove();
+			}
+			
+			public function disconnectRooms():void {
+				var cursor:IViewCursor = this.chatrooms.createCursor();
+				while(cursor.current) {
+					(cursor.current as Chatroom).communicator = null;
+					cursor.moveNext();
+				}
+			}
+			
+			//** Internal utility. Create rooms using procure only.
+			private function createRoom(communicator:Communicator):Chatroom {
+				var chatroom:Chatroom = new Chatroom();
+				chatroom.communicator = communicator;
+				chatroom.formatter = new EventFormatter(chatroom);
+				this.cursor.insert(chatroom);
+				chatroom.addEventListener(Chatroom.REQUEST_CLOSE, this.chatroomListener);
+				chatroom.addEventListener(Chatroom.REQUEST_RECONNECT, this.chatroomListener);
+				chatroom.addEventListener(Chatroom.REQUEST_PREVIOUS, this.chatroomListener);
+				chatroom.addEventListener(Chatroom.REQUEST_NEXT, this.chatroomListener);
+				return chatroom;
+			}
+			
+			private function chatroomListener(e:Event):void {
+				var chatroom:Chatroom = e.currentTarget as Chatroom;
+				switch(e.type) {
+					case Chatroom.REQUEST_CLOSE:
+						if(this.cursor.findAny({label:chatroom.label}))
+							this.cursor.remove();
+						break;
+					case Chatroom.REQUEST_RECONNECT:
+						this.dispatchEvent(e);
+						break;
+					case Chatroom.REQUEST_NEXT:
+						if(!this.numChildren)
+							return;
+						this.selectedIndex = (this.selectedIndex + 1) % this.numChildren;
+						break;
+					case Chatroom.REQUEST_PREVIOUS:
+						if(!this.numChildren)
+							return;
+						if(this.selectedIndex === 0)
+							this.selectedIndex = this.numChildren - 1;
+						else
+							this.selectedIndex--;
+						break;
+				}
+			}
+			
+		]]>
+	</mx:Script>
+ </bs:TabNavigator>

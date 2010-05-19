@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:Canvas
+	xmlns:mx="http://www.adobe.com/2006/mxml"
+	xmlns:bs="bluespot.controls.*"
+	
+	implements="bluespot.controls.sessionClasses.ISessionView"
+	
+	preinitialize="preinitializer();"
+	
+	width="100%"
+	height="100%"
+	>
+	
+	<mx:Script>	
+		<![CDATA[
+			import mx.binding.utils.BindingUtils;
+			import bluespot.sessions.ChatSession;
+			import bluespot.sessions.ISession;
+	
+			public function preinitializer():void {
+				mx.binding.utils.BindingUtils.bindProperty(this, "label", this, ["session", "name"]);
+			}
+	
+			//----------------------------
+			//  session
+			//----------------------------
+			
+			private var _session:ISession;
+			
+			[Bindable]
+			public function get session():ISession {
+				return this._session;
+			}
+			
+			public function set session(session:ISession):void {
+				if(this.currentView) {
+					this.currentView.session = null;
+					this.removeChild(DisplayObject(this.currentView));
+				}
+				this._session = session;
+				if(this.session) {
+					this.currentView = SessionViewFactory.getInstance().createSessionView(this.session);
+					this.addChild(DisplayObject(this.currentView));
+				}
+			}
+			
+			protected var currentView:ISessionView;
+			
+			//-----------------------------------------------------------------
+			//
+			//  Overridden methods: IDataRenderer
+			//
+			//-----------------------------------------------------------------
+			
+			override public function get data():Object {
+				return this.session;
+			}
+			
+			override public function set data(data:Object):void {
+				this.session = ISession(data);
+			}
+		]]>
+	</mx:Script>
+</mx:Canvas>

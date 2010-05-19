@@ -1,0 +1,552 @@
+<mx:Panel
+	xmlns:mx="http://www.adobe.com/2006/mxml"
+	xmlns:bs="bluespot.controls.*"
+	
+	title="Connect to Server"
+	horizontalAlign="center"
+	
+	initialize="initializeHandler(event);"
+	creationComplete="creationCompleteListener(event);">
+	
+	<mx:Style>
+		.error {
+			font-weight:bold;
+		}
+	</mx:Style>
+	
+	<mx:Script>
+		<![CDATA[
+			import mx.resources.ResourceManager;
+			import mx.core.UIComponent;
+			import mx.binding.utils.*;
+			
+			import mx.collections.*;
+			
+			import mx.events.ValidationResultEvent;
+			import mx.events.FlexEvent;
+			import mx.events.ListEvent;
+			
+			import mx.core.IButton;
+			import mx.managers.IFocusManagerComponent;
+			import mx.messaging.AbstractConsumer;
+			import mx.controls.Alert;
+			import mx.utils.StringUtil;
+			import mx.validators.ValidationResult;
+			
+			import bluespot.net.Server;
+			import bluespot.events.ServerSelectorEvent;
+			import bluespot.managers.ServerAccountManager;
+			import bluespot.net.ServerAccount;
+			import bluespot.utils;
+			import bluespot.events.ServerEvent;
+			
+			public static const STATE_CONNECTED:String = "Connected";
+			
+			//-----------------------------------------------------------------
+			//
+			//  Constructors
+			//
+			//-----------------------------------------------------------------
+			
+			private function initializeHandler(e:Event):void {
+				
+				// Get a private instance of the ServerAccountManager for convenience.
+				this.serverAccountManager = ServerAccountManager.getInstance();
+				
+				// Get the list of servers, sorted by last connected.
+				var serverList:ListCollectionView = new ListCollectionView();
+				serverList.sort = new Sort();
+				serverList.sort.fields = [new SortField("lastConnected", false, true)];
+				BindingUtils.bindProperty(serverList, "list", this.serverAccountManager, "rawSourceList");
+				serverList.refresh();				
+				
+				// Apply this to our data.
+				this.serverNameField.dataProvider = serverList;
+				
+				// Ensure we're selected on the first, rather than the last, item.
+				var serverNameField:EditableComboBox = this.serverNameField;
+				this.callLater(function():void {
+					if(serverList.length)
+						serverNameField.selectedIndex = 0;
+				});
+				
+				// Add listeners to our fields, only on commits.
+				BindingUtils.bindSetter(this.serverNameListener, this.serverNameField, "text", true);
+				BindingUtils.bindSetter(this.selectedListener, this.channelList, "selectedItem", true);
+				
+				// Finally, add focus and key listeners to change the status tooltip as necessary.
+				this.addEventListener(KeyboardEvent.KEY_DOWN, this.keyListener);
+				this.addEventListener(FocusEvent.FOCUS_IN, this.focusListener);
+			}
+			
+			private function creationCompleteListener(e:Event):void {
+				this.serverNameField.setFocus();
+				var textInput:TextInput = this.serverNameField.getTextInput();
+				textInput.setSelection(textInput.length, textInput.length);
+			}
+			
+			/**
+			 * An internal reference to this Singleton, for convenience.
+			 */
+			private var serverAccountManager:ServerAccountManager;
+			
+			/**
+			 * Any Server errors received will be formatted, and given to this property,
+			 * which is used in our status tooltip functions to check if there was an error.
+			 */
+			private var statusError:String;
+			
+			/**
+			 * A List of ChangeWatcers binding the active ServerAccount to our fields
+			 * and vice-versa.
+			 */
+			private var watchers:Array;
+			
+			/**
+			 * Channel List cursor. Used internally.
+			 */
+			private var cursor:IViewCursor;
+			
+			//----------------------------
+			//  serverAccount
+			//----------------------------
+			
+			private var _serverAccount:ServerAccount;
+			
+			[Bindable]
+			public function get serverAccount():ServerAccount {
+				return this._serverAccount;	
+			}
+			
+			public function set serverAccount(serverAccount:ServerAccount):void {
+				this._serverAccount = serverAccount;
+				if(!this._serverAccount)
+					throw new Error("ServerAccount is falsy. (Cannot set serverAccount to null; it must be set to something.)");
+				this.cursor = this.serverAccount.channels.createCursor();
+				if(this.watchers) {
+					for each(var watcher:ChangeWatcher in this.watchers) {
+						watcher.unwatch();
+					}
+				}
+				/* We intentionally omit serverName from being updated, since we use that as the key for our
+					ServerAccounts. If it was binded as well, we'd never actually change servers, just modify
+					the existing one. */
+				this.watchers = [
+					/* Bind any changes made in the ServerAccount to the fields. Since these update immediately on
+						binding, we need to make sure the serverAccount binds to the fields first. */
+					BindingUtils.bindProperty(this.serverPortField, "text", this.serverAccount, "serverPort"),
+					BindingUtils.bindProperty(this.nicknameField, "text", this.serverAccount, "nickname"),
+					//BindingUtils.bindProperty(this.serverAccount, "channels", this.channelList, "dataProvider")
+					// Bind any changes made in the fields to the ServerAccount.
+					BindingUtils.bindProperty(this.serverAccount, "serverPort", this.serverPortField, "text", true),
+					BindingUtils.bindProperty(this.serverAccount, "nickname", this.nicknameField, "text", true),
+					BindingUtils.bindProperty(this.channelList, "dataProvider", this.serverAccount, "channels")
+				];
+			}
+			
+			//-----------------------------------------------------------------
+			//
+			//  ServerAccount Manipulation and Connection Methods
+			//
+			//-----------------------------------------------------------------
+			
+			private function createBlankServerAccount(preserveSettings:Boolean = false, serverName:String = null):void {
+				var serverAccount:ServerAccount = new ServerAccount();
+				if(preserveSettings) {
+					serverAccount.nickname = this.nicknameField.text;
+					serverAccount.serverName = serverName;
+					serverAccount.serverPort = uint(this.serverPortField.text);
+				} else {
+					serverAccount.nickname = "Guest";
+					serverAccount.serverName = "irc.example.net";
+					serverAccount.serverPort = 6667;
+					// We probably need to explicitly set the serverNameField's value here to our newly created name.
+					// In cases where it was entered, this has no effect, but if we've deleted all our servers, it won't
+					// update without an explicit call.
+					this.serverNameField.text = serverAccount.serverName;
+				}
+				this.serverAccount = serverAccount;				
+			}
+			
+			private function removeServerAccount():void {
+				var cursor:IViewCursor = this.serverAccountManager.getCursorFrom(this.serverAccount);
+				if(cursor) {
+					this.setStatus("The server, {0}, has been removed.", this.serverAccount.serverName);
+					cursor.remove();
+					if(cursor.current) {
+						this.serverAccount = cursor.current as ServerAccount;
+						return;
+					}
+				}
+				// Otherwise, make a new, clean ServerAccount.
+				this.createBlankServerAccount();	
+			}
+			
+			private function toggleConnection():void {
+				var event:ServerSelectorEvent;
+				if(this.currentState === ServerSelector.STATE_CONNECTED) {
+					event = new ServerSelectorEvent(
+						ServerSelectorEvent.DISCONNECT,
+						this.serverAccount,
+						this.monitor
+					);
+					if(this.dispatchEvent(event)) {
+						// The default is allowed, so disconnect.
+						this.monitor.disconnect();	
+					}
+					return;
+				}
+				var results:Array = Validator.validateAll(this.validators);
+				if(results.length)
+					return;
+				this.serverAccountManager.insert(this.serverAccount, true);
+				event = new ServerSelectorEvent(
+					ServerSelectorEvent.CONNECT,
+					this.serverAccount,
+					this.serverAccount.createServer()
+				);
+				if(this.dispatchEvent(event)) {
+					// The default is allowed, so monitor the Server we made.
+					this.monitor = event.server;
+					this.monitor.connect();
+				}
+				// Refresh to see the new server in the saved servers list.
+				(this.serverNameField.dataProvider as ICollectionView).refresh();
+			}
+			
+			//-----------------------------------------------------------------
+			//
+			//  Channel List Methods and Event Listeners
+			//
+			//-----------------------------------------------------------------
+			
+			private function addChannel():void {
+				if(!this.channelField.text || this.channelField.text.match(/^\s*$/))
+					return;
+				var channel:String = this.channelField.text;
+				if(!this.cursor.findAny(channel)) {
+					this.cursor.insert(channel);
+					this.cursor.findAny(channel);
+					this.channelField.text = "";
+					this.setStatus("The channel, {0}, was added.", channel);
+				} else {
+					this.setError("The channel, {0}, is already on the channels list.", channel);
+				}
+				this.channelList.selectedItem = this.cursor.current;				
+			}
+			
+			private function removeChannel():void {
+				if(this.cursor.findAny(this.channelList.selectedItem)) {
+					this.setStatus("The channel, {0}, was removed.", this.channelList.selectedItem);
+					this.cursor.remove();
+					this.channelList.selectedItem = this.cursor.current;
+				}
+			}
+			
+			private function selectedListener(selectedItem:Object):void {
+				this.removeChannelButton.enabled = !!selectedItem;
+				if(selectedItem)
+					this.channelField.text = String(selectedItem);
+			}
+			
+			private function itemEditEnd(e:ListEvent):void {
+				var editor:TextInput = TextInput(this.channelList.itemEditorInstance);
+				itemEditorValidator.source = editor;
+				var result:ValidationResultEvent = itemEditorValidator.validate();
+				if(result.type == ValidationResultEvent.INVALID)
+					e.preventDefault();
+			}
+			
+			//-----------------------------------------------------------------
+			//
+			//  Status ToolTip Methods
+			//
+			//-----------------------------------------------------------------
+			
+			private function local(resourceName:String, params:Array = null):String {
+				return ResourceManager.getInstance().getString("ServerSelector", resourceName, params);
+			}
+			
+			private function getStatus():String {
+				return this.statusLabel.text;
+			}
+			
+			private function setStatus(status:String, ...rest):void {
+				if(rest && rest.length)
+					status = StringUtil.substitute(status, rest);
+				this.clearStyle("fontWeight");
+				this.statusLabel.styleName = "";
+				this.statusLabel.text = status;
+			}
+			
+			private function setError(error:String, ...rest):void {
+				this.setStatus(error, rest);
+				this.statusLabel.styleName = "error";
+			}
+			
+			//-----------------------------------------------------------------
+			//
+			//  Monitoring functions
+			//
+			//-----------------------------------------------------------------
+			
+			//----------------------------
+			//  monitor
+			//----------------------------
+			
+			private var _monitor:Server;
+			
+			public function get monitor():Server {
+				return this._monitor;	
+			}
+			
+			public function set monitor(monitor:Server):void {
+				if(this._monitor === monitor)
+					return;
+				if(this._monitor) {
+					this._monitor.removeEventListener(ServerEvent.CONNECTION_CHANGE, this.connectionChangeListener);
+					this._monitor.removeEventListener(ServerEvent.ERROR, this.serverErrorListener);
+				}
+				this._monitor = monitor;
+				if(this._monitor) {
+					this._monitor.addEventListener(ServerEvent.CONNECTION_CHANGE, this.connectionChangeListener);
+					this._monitor.addEventListener(ServerEvent.ERROR, this.serverErrorListener);
+					this.currentState = this.monitor.active ? ServerSelector.STATE_CONNECTED : null;
+				} else {
+					this.currentState = null;
+				}
+			}
+			
+			//----------------------------
+			//  Monitor Event Listeners
+			//----------------------------
+			
+			private function connectionChangeListener(e:Event):void {
+				var server:Server = this.monitor;
+				this.currentState = server.active ? ServerSelector.STATE_CONNECTED : null;
+				var statusText:String;
+				switch(server.state) {
+					case Server.DISCONNECTED:
+						statusText = this.statusError ? ("Disconnected from '{0}' (Reason: '{1}')") : "";
+						this.monitor = null;
+						break;
+					case Server.INITIALIZING:
+						statusText = "";
+						this.monitor = null;
+						break;
+					case Server.CONNECTING:
+						statusText = "Connecting to '{0}' ..."
+						this.statusError = "";
+						break;					
+					case Server.CONNECTED:
+						statusText = "Connected to '{0}'";
+						var event:ServerSelectorEvent = new ServerSelectorEvent(
+							ServerSelectorEvent.JOIN_CHANNELS,
+							this.serverAccount,
+							server
+						);
+						this.dispatchEvent(event);
+						if(!event.isDefaultPrevented()) {
+							for each(var channel:String in this.serverAccount.channels)
+								server.joinChannel(channel);
+						}
+						break;
+					case Server.AUTHENTICATING:
+						statusText = "Authenticating with '{0}' ...";
+						break;
+					case Server.DISCONNECTING:
+						statusText = "Disconnecting from '{0}' ...";
+						break;
+					default:
+						throw new Error("Unsupported connection state '" + server.state + "'");					
+				}
+				this.statusLabel.text = StringUtil.substitute(statusText,
+					server.serverName + ":" + server.serverPort,
+					this.statusError
+				);
+				this.statusError = null;
+			}
+			
+			private function serverErrorListener(e:ServerEvent):void {
+				this.statusError = e.debugMessage;
+			}
+			
+			//-----------------------------------------------------------------
+			//
+			//  Event Listeners and Utility
+			//
+			//-----------------------------------------------------------------
+			
+			private function serverNameListener(serverName:String):void {
+				// Upon creation, our serverAccount will be undefined, so we test that here. Otherwise
+				// it should always be some value (We enforce this in set serverAccount)
+				if(this.serverAccount && this.serverAccount.serverName === serverName) {
+					// No change since last time, so return silently.
+					return;
+				}
+				// We don't use serverAccountManager's procure() because we may be 
+				// making alot of trash Accounts that we wouldn't want save.d
+				var fetchedServer:ServerAccount = this.serverAccountManager.peek(serverName) as ServerAccount;
+				if(fetchedServer) {
+					// It's a saved server, so use that directly.
+					this.removeServerLink.enabled = true;
+					this.serverAccount = fetchedServer;
+				} else {
+					// It's a new server, so make a new Account to match.
+					this.removeServerLink.enabled = false;
+					this.createBlankServerAccount(true, serverName);	
+				}
+			}
+			
+			private function focusListener(e:FocusEvent):void {
+				if(this.currentState === ServerSelector.STATE_CONNECTED || !this.focusManager)
+					return;
+				var component:UIComponent = this.focusManager.findFocusManagerComponent(e.target as InteractiveObject) as UIComponent;
+				if(!component)
+					return;
+				if((bluespot.utils.isChildOf(component, this.serversForm) || component === this.connectionToggle) && this.quietValidate()) {
+					this.setStatus("Press Enter or click 'Connect' to join this server.");
+				} else if(bluespot.utils.isChildOf(component, this.channelsForm)) {
+					this.setStatus("The channels you enter here will be joined once you connect.");
+				}
+			}
+			
+			private function keyListener(e:KeyboardEvent):void {
+				if(this.currentState === ServerSelector.STATE_CONNECTED)
+					return;
+				if(e.keyCode !== Keyboard.ENTER)
+					return;
+				var focused:InteractiveObject = InteractiveObject(
+					this.focusManager ? this.focusManager.getFocus() : null
+				);
+				if(bluespot.utils.isChildOf(focused, this.serversForm) || focused === this.connectionToggle) { 
+					e.preventDefault();
+					this.toggleConnection();
+				}
+			}
+			
+			private function quietValidate():Boolean {
+				var results:Array = [];
+				for each(var validator:Validator in this.validators) {
+					var result:ValidationResultEvent = validator.validate(null, true);
+					if(!result || result.type !== ValidationResultEvent.VALID)
+						results.push(result);
+				}
+				return results.length === 0;
+			}
+			
+		]]>
+	</mx:Script>
+	
+	<mx:states>
+		<mx:State name="Connected">
+			<mx:SetProperty target="{connectionToggle}" name="label" value="{local('Disconnect.Label')}"/>
+			<mx:SetProperty target="{channelsForm}" name="enabled" value="{false}"/>
+			<mx:SetProperty target="{serversForm}" name="enabled" value="{false}"/>
+		</mx:State>
+	</mx:states>
+	
+	<mx:HBox backgroundColor="#FFFFFF" backgroundAlpha="0.49" verticalAlign="middle">		
+	
+		<mx:Form id="serversForm" backgroundAlpha="0.0">
+			
+			<mx:FormHeading label="{local('ServersForm.ServerHeader')}"/>
+	
+			<!-- Server Name Field -->
+	
+			<mx:FormItem width="100%" label="{local('ServerName.Label')}" toolTip="{local('ServerName.ToolTip')}">
+				<bs:EditableComboBox id="serverNameField"
+					width="100%"
+					editable="true"
+					labelField="name"
+					text="{local('ServerName.Default')}"
+				/>
+			</mx:FormItem>
+	
+			<!-- Server Port Field -->			
+			
+			<mx:FormItem label="{local('ServerPort.Label')}" toolTip="{local('ServerPort.ToolTip')}">
+				<mx:TextInput id="serverPortField"
+					maxChars="4"
+					restrict="0-9"
+					text="{local('ServerPort.Default')}"
+				/>
+			</mx:FormItem>
+	
+			<mx:FormHeading label="{local('ServersForm.UserHeader')}"/>
+	
+			<!-- Nickname Field -->
+	
+			<mx:FormItem width="100%" label="{local('Nickname.Label')}" toolTip="{local('Nickname.Tooltip')}">
+				<mx:TextInput id="nicknameField"
+					width="100%"
+					editable="true"
+					text="{local('Nickname.Default')}"
+				/>
+			</mx:FormItem>
+	
+			<!-- Remove Server Button -->
+		
+			<mx:LinkButton id="removeServerLink"
+				width="100%"
+				enabled="false"
+				tabEnabled="false"
+				click="this.removeServerAccount();" 
+				label="{local('RemoveServer.Label')}"
+				toolTip="{local('RemoveServer.ToolTip')}"
+			/>
+	
+		</mx:Form>
+	
+		<mx:VRule height="95%" width="1"/>
+		
+		<mx:Form id="channelsForm" indicatorGap="0">
+			
+			<mx:FormHeading width="100%" textAlign="center" label="{local('ChannelsForm.Header')}"/>
+			
+			<!-- Add Channel Field -->
+			
+			<mx:FormItem direction="horizontal">
+				<mx:TextInput id="channelField" width="100%" enter="addChannel();" toolTip="{local('ChannelField.ToolTip')}"/>
+				<mx:Button click="addChannel();" label="{local('AddChannel.Label')}" toolTip="{local('AddChannel.ToolTip')}"/>
+			</mx:FormItem>
+			
+			<!-- Channels List -->
+			
+			<mx:List id="channelList"
+				width="100%"
+				labelField="name"
+				itemEditEnd="itemEditEnd(event);"
+				verticalScrollPolicy="on"
+			/>
+			
+			<!-- Remove Channel Button -->
+			
+			<mx:FormItem width="100%" horizontalAlign="center">
+				<mx:LinkButton id="removeChannelButton"
+					enabled="false"
+					tabEnabled="false"
+					click="removeChannel();"
+					color="#0B333C"
+					label="{local('RemoveChannel.Label')}"
+				/>
+			</mx:FormItem>
+			
+		</mx:Form>
+	
+	</mx:HBox>
+	
+	<mx:ControlBar>
+		<mx:Label id="statusLabel" width="100%" fontSize="11"/>	
+		<mx:Button id="connectionToggle" click="this.toggleConnection()" label="{local('Connect.Label')}"/>
+	</mx:ControlBar>
+	
+	<mx:Array id="validators">
+		<mx:Validator source="{nicknameField}" property="text" required="true" requiredFieldError="{local('Nickname.Error')}"/>
+		<mx:Validator source="{serverNameField}" property="text" required="true" requiredFieldError="{local('ServerName.Error')}"/>
+		<mx:NumberValidator source="{serverPortField}" property="text" minValue="1025" lowerThanMinError="{local('ServerPort.RangeError')}"/>
+	</mx:Array>
+	
+	<mx:RegExpValidator id="itemEditorValidator" expression="\S+" property="text"/>
+	
+</mx:Panel>

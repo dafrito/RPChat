@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<SessionViewBase
+	xmlns="bluespot.controls.sessionClasses.*"
+	xmlns:mx="http://www.adobe.com/2006/mxml"
+	
+	width="100%"
+	height="100%">
+	<mx:Script>
+		<![CDATA[
+			import mx.formatters.Formatter;
+			import bluespot.events.ServerEvent;
+			import bluespot.sessions.ISession;
+			
+			[Bindable]
+			private var bufferedValues:Array = [];
+			
+			private var formatter:Formatter;
+			
+			private function get loaded():Boolean {
+				return this.messageField && this.messageField.loaded;
+			}
+			
+			override protected function handleListener(value:Object):void {
+				if(this.loaded) {
+					this.messageField.domWindow.addValue(this.formatter.format(value));
+				} else {
+					this.bufferedValues.push(value);
+				}
+			}
+			
+			override protected function cleanUpSession(session:ISession):void {
+				if(this.loaded) {
+					this.messageField.domWindow.clearValues();
+				}
+				this.bufferedValues.splice(0, this.bufferedValues.length);
+			}
+			
+			private function completeListener():void {
+				this.formatter = new HTMLEventFormatter();
+				if(!this.messageField.loaded)
+					throw new Error("The messageField is not loaded!");
+				while(this.bufferedValues.length)
+					this.handleListener(this.bufferedValues.shift());
+			}
+			
+		]]>
+	</mx:Script>
+	<mx:Style>
+		.messageField {
+			padding-left: 5;
+			padding-right: 5;
+			padding-top: 5;
+			padding-bottom: 5;
+		}
+	</mx:Style>
+	<mx:HTML id="messageField" styleName="messageField" location="assets/message_buffer.html" width="100%" height="100%" complete="completeListener();"/>
+</SessionViewBase>

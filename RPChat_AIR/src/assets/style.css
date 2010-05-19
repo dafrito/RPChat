@@ -1,0 +1,77 @@
+/*@font-face {
+	src: local("Calibri");
+	fontFamily: calibri;
+}
+
+@font-face {
+	src: local("Calibri");
+	fontFamily: calibri;
+	font-weight: bold;
+}
+
+@font-face {
+	src: local("Calibri");
+	fontFamily: calibri;
+	font-style: italic;
+}
+
+@font-face {
+	src: local("Calibri");
+	fontFamily: calibri;
+	font-style: italic;
+	font-weight: bold;	
+}*/
+
+Chatroom {
+	paddingLeft: 4;
+	paddingRight: 4;
+	paddingBottom: 8;
+}
+
+.chatTextArea {
+	fontSize:16;
+	fontFamily: Calibri;
+	paddingLeft: 4;
+	paddingTop: 4;
+	paddingRight: 4;
+	paddingBottom: 4;
+}
+
+.chatEntryField {
+	fontSize:16;
+	fontFamily: Calibri;
+	paddingLeft:4;
+}
+
+.chatCommunicator {
+	font-weight: bold;
+}
+
+.chatMessage {
+	indent: -20;
+	blockIndent: 20;
+	color: #0b333c; /* Blackish */
+}
+
+.chatDetail {
+	color: gray;
+}
+
+.chatEmote {
+	color: red;
+}
+
+.chatJoin {
+	font-style:italic;
+	color: #449742; /* Greenish */
+}
+
+.chatLeft {
+	color: #d6282f; /* Reddish */
+	font-style:italic;
+}
+
+.chatSpacer {
+	font-size:1;
+	leading:2;
+}
