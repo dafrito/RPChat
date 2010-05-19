@@ -1,0 +1,6 @@
+.metadata
+bin*/
+.hg/
+*.air
+libs
+docs
